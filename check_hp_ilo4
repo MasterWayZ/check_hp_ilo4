@@ -1,0 +1,921 @@
+#!/usr/bin/perl -w
+
+#
+#  Nagios plugin for checking HP ILO4 Integrated Lights Out service processor
+#  Requires SNMP to be enabled on the ILO
+#
+
+
+
+
+# CHANGE LOG
+# ----------
+#   2022-06-17  njeffrey	Script created
+
+
+
+# PREREQUISITES
+# ------------
+#  You will need to enable SNMPv1 on the service processor
+#  To enable SNMP from the web GUI:  Administration, Management, SNMP Settings, Read Community community name, Apply
+#  To enable SNMP from the CLI:      ???
+
+
+
+# NOTES
+# -----
+#  This script should return one (and only one) line of ouput.  Multiple
+#  lines of output are silently ignored by nagios.
+#
+#  The line of output will become the body of the alert message sent by nagios
+#
+#
+#
+#  This script is executed on the nagios server, and makes SNMP queries to a remote Windows host.
+#
+#  You will need to add a section similar to the following to the commands.cfg file on the nagios server.  
+#      # 'check_hp_ilo4' command definition
+#      define command{
+#             command_name    check_hp_ilo4
+#             command_line    $USER1$/check_hp_ilo4 -H $HOSTADDRESS$ -C $ARG1$ 
+#             }
+#
+#
+#  You will need to add a section similar to the following to the services.cfg file on the nagios server.  
+#      # Check HP ILO4
+#      # Requires SNMP enabled on ILO
+#      # syntax is check_hp_ilo4!optional_snmp_community
+#      define service {
+#              use                             generic-24x7-service
+#              hostgroup_name                  all_hp_ilo4
+#              service_description             HP ILO4
+#              check_command                   check_hp_ilo4!optional_snmp_community
+#              }
+
+
+# TROUBLESHOOTING
+# ---------------
+#
+# Please note that the /usr/bin/snmpwalk binary will accept OID values in either of the following formats:
+#    1.3.6.1.2.1.25.4.2.1.2		
+#   .1.3.6.1.2.1.25.4.2.1.2		(note the leading . character)
+# However, the /usr/sbin/snmpinfo binary from AIX does not like the leading dot in the OID,
+# so be sure you specify the OID variable without the leading dot.
+
+
+
+# NOTES
+# -----
+# FANS
+# ----
+# .1.3.6.1.4.1.232.6.2.6.7.1.2.0 (Fan Index)
+# .1.3.6.1.4.1.232.6.2.6.7.1.3.0 (Fan Locale    (1=other, 2=unknown, 3=system, 4=systemBoard, 5=ioBoard, 6=cpu, 7=memory, 8=storage, 9=removable media,
+#                                               10=power supply, 11=ambent, 12=chassis, 13=bridge card, 14=management board, 15=backplane, 16=network slot, 17=blade slot, 18=virtual)
+# .1.3.6.1.4.1.232.6.2.6.7.1.4.0 (Fan Present   (1=other, 2=absent,     3=present)
+# .1.3.6.1.4.1.232.6.2.6.7.1.5.0 (Fan Present   (1=other, 2=tachOutput, 3=spinDetect)
+# .1.3.6.1.4.1.232.6.2.6.7.1.6.0 (Fan Speed     (1=other, 2=normal,     3=high)
+# .1.3.6.1.4.1.232.6.2.6.7.1.9.0 (Fan Condition (1=other, 2=ok,         3=degraded, 4=failed)
+#
+#
+# TEMPERATURE
+# -----------
+#  .1.3.6.1.4.1.232.6.2.6.8.1.2.0 (Temperature Sensor Index)
+#  .1.3.6.1.4.1.232.6.2.6.8.1.3.0 (Temperature Sensor Locale (1=other, 2=unknown, 3=system, 4=systemBoard, 5=ioBoard, 6=cpu, 7=memory, 8=storage, 9=removable media, 10=power supply, 11=ambent, 12=chassis, 13=bridge card)
+#  .1.3.6.1.4.1.232.6.2.6.8.1.7.0 (Threshold Type (1=other, 5=blowout, 9=caution, 15=critical, 16=noreaction)
+#  .1.3.6.1.4.1.232.6.2.6.8.1.4.0 (Temperature Celsius)
+#  .1.3.6.1.4.1.232.6.2.6.8.1.5.0 (TemperatureThreshold)
+#  .1.3.6.1.4.1.232.6.2.6.8.1.6.0 (TemperatureCondition)
+#  .1.3.6.1.4.1.232.6.2.6.8.1.4.0.1 (chassis inlet air temperature sensor in Celsius)  <--- useful for ambient temperature
+#
+#
+# CPU
+# ---
+#  .1.3.6.1.4.1.232.1.2.2.1.1.1  (CPU Index)
+#  .1.3.6.1.4.1.232.1.2.2.1.1.3  (CPU Name)
+#  .1.3.6.1.4.1.232.1.2.2.1.1.4  (CPU Speed in MHz)
+#  .1.3.6.1.4.1.232.1.2.2.1.1.5  (CPU Step)
+#  .1.3.6.1.4.1.232.1.2.2.1.1.6  (CPU status (1=unknown, 2=ok, 3=degraded, 4=failed, 5=disabled)
+#  .1.3.6.1.4.1.232.1.2.2.1.1.15 (Number of enabled CPU cores)
+#  .1.3.6.1.4.1.232.1.2.2.1.1.25 (Number of available CPU threads)
+#  .1.3.6.1.4.1.232.1.2.2.1.1.26 (CPU power status (1=unknown, 2=Low Powered, 3=Normal Powered, 4=High Powered)
+#
+#
+# Logical Drives
+# --------------
+#  .1.3.6.1.4.1.232.3.2.3.1.1.2.0 (Logical Drive Index)
+#  .1.3.6.1.4.1.232.3.2.3.1.1.1.0 (Logical Drive Controller)
+#  .1.3.6.1.4.1.232.3.2.3.1.1.3.0 (Logical Drive Fault Tolerance (1=other, 2=none, 3=RAID 1/RAID 1+0 (Mirroring), 4=RAID 4 (Data Guard), 5=RAID 5 (Distributed Data Guard),
+#                                                                 7=RAID 6 (Advanced Data Guarding), 8=RAID 50, 9=RAID 60, 10=RAID 1 ADM (Advanced Data Mirroring), 11=RAID 10 ADM (Advanced Data Mirroring with Striping))
+#  .1.3.6.1.4.1.232.3.2.3.1.1.9.0 (Logical Drive Size in Mb)
+#  .1.3.6.1.4.1.232.3.2.3.1.1.4.0 (Logical Drive Status (1=other, 2=ok, 3=Failed, 4=Unconfigured, 5=Recovering, 6=Ready Rebuild, 7=Rebuilding, 8=Wrong Drive, 9=Bad Connect,
+#                                                      10=Overheating, 11=Shutdown, 12=Expanding, 13=Not Available, 14=Queued For Expansion, 15=Multi-path Access Degraded,
+#                                                      16=Erasing, 17=Predictive Spare Rebuild Ready, 18=Rapid Parity Initialization In Progress, 19=Rapid Parity Initialization Pending,
+#                                                      20=No Access – Encrypted with No Controller Key, 21=Unencrypted to Encrypted Transformation in Progress,
+#                                                      22=New Logical Drive Key Rekey in Progress, 23=No Access – Encrypted with Controller Encryption Not Enabled,
+#                                                      24=Unencrypted To Encrypted Transformation Not Started, 25=New Logical Drive Key Rekey Request Received)
+#  .1.3.6.1.4.1.232.3.2.3.1.1.11.0 (Logical Drive Condition (1=other, 2=ok, 3=degraded, 4=failed)
+#
+# Physical Drives
+# ---------------
+#  .1.3.6.1.4.1.232.3.2.5.1.1.2.0 (Drive Index)
+#  .1.3.6.1.4.1.232.3.2.5.1.1.5.0 (Drive Bay)
+#  .1.3.6.1.4.1.232.3.2.5.1.1.64.0 (Drive Location)
+#  .1.3.6.1.4.1.232.3.2.5.1.1.3.0 (Drive Vendor)
+#  .1.3.6.1.4.1.232.3.2.5.1.1.51.0 (Drive Serial Number)
+#  .1.3.6.1.4.1.232.3.2.5.1.1.45.0 (Drive Size in Mb)
+#  .1.3.6.1.4.1.232.3.2.5.1.1.65.0 (Drive Link Rate (1=other, 2=1.5Gbps, 3=3.0Gbps, 4=6.0Gbps, 5=12.0Gbps))
+#  .1.3.6.1.4.1.232.3.2.5.1.1.70.0 (Drive Current Temperature)
+#  .1.3.6.1.4.1.232.3.2.5.1.1.71.0 (Drive Temperature Threshold)
+#  .1.3.6.1.4.1.232.3.2.5.1.1.72.0 (Drive Maximum Temperature)
+#  .1.3.6.1.4.1.232.3.2.5.1.1.6.0 (Drive Status (1=Other, 2=Ok, 3=Failed, 4=Predictive Failure, 5=Erasing, 6=Erase Done, 7=Erase Queued, 8=SSD Wear Out, 9=Not Authenticated)
+#  .1.3.6.1.4.1.232.3.2.5.1.1.37.0 (Drive Condition (1=other, 2=ok, 3=degraded, 4=failed)
+#  .1.3.6.1.4.1.232.3.2.5.1.1.9.0 (Drive Reference Time in hours)
+#
+#
+# iLO NIC
+# ---------
+# .1.3.6.1.4.1.232.9.2.5.2.1.1 (iLO location)
+# .1.3.6.1.4.1.232.9.2.5.1.1.2 (iLO NIC model)
+# .1.3.6.1.4.1.232.9.2.5.1.1.4 (iLO NIC MAC)
+# .1.3.6.1.4.1.232.9.2.5.1.1.5 (iLO NIC IPv4)
+# .1.3.6.1.4.1.232.9.2.5.1.1.9 (iLO NIC speed)
+# .1.3.6.1.4.1.232.9.2.5.1.1.14 (iLO NIC FQDN)
+# .1.3.6.1.4.1.232.9.2.5.2.1.2 (Tx bytes)
+# .1.3.6.1.4.1.232.9.2.5.2.1.3 (Tx packets)
+# .1.3.6.1.4.1.232.9.2.5.2.1.6 (Tx discard packets)
+# .1.3.6.1.4.1.232.9.2.5.2.1.7 (Tx error packets)
+# .1.3.6.1.4.1.232.9.2.5.2.1.9 (Rx bytes)
+# .1.3.6.1.4.1.232.9.2.5.2.1.10 (Rx packets)
+# .1.3.6.1.4.1.232.9.2.5.2.1.13 (Rx discard packets)
+# .1.3.6.1.4.1.232.9.2.5.2.1.14 (Rx error packets)
+# .1.3.6.1.4.1.232.9.2.5.2.1.15 (Rx unknown packets)
+#
+# Memory
+# ------
+# .1.3.6.1.4.1.232.6.2.14.13.1.1 (Memory Index)
+# .1.3.6.1.4.1.232.6.2.14.13.1.13 (Location)
+# .1.3.6.1.4.1.232.6.2.14.13.1.9 (Manufacturer)
+# .1.3.6.1.4.1.232.6.2.14.13.1.10 (Part Number)
+# .1.3.6.1.4.1.232.6.2.14.13.1.6 (Size in Kbytes)
+# .1.3.6.1.4.1.232.6.2.14.13.1.8 (Memory Technology)
+# .1.3.6.1.4.1.232.6.2.14.13.1.7 (Memory Type)
+# .1.3.6.1.4.1.232.6.2.14.13.1.19 (Memory status (1=other, 2=notPresent, 3=present, 4=good, 5=add, 6=upgrade, 7=missing, 8=doesNotMatch, 9=notSupported, 10=badConfig, 11=degraded, 12=spare, 13=partial)
+# .1.3.6.1.4.1.232.6.2.14.13.1.20 (Memory condition (1=other, 2=ok, 3=degraded, 4=degradedModuleIndexUnknown)
+#
+#
+# POWER SUPPLY STATUS
+# -------------------
+# 1.3.6.1.4.1.232.6.2.9.1.0       cpqHeFltTolPwrSupplyCondition   This value specifies the overall condition of the fault tolerant  power supply sub-system.  (1=other, 2=ok, 3=degraded, 4=failed)
+#
+# Command output will look similar to the following:
+#    $ /usr/bin/snmpwalk  -v 1 -c public ilo .1.3.6.1.4.1.232.6.2.14.13.1.20    #OID for memory condition, shows health status of each DIMM (1=other, 2=ok, 3=degraded, 4=degradedModuleIndexUnknown)
+#    SNMPv2-SMI::enterprises.232.6.2.14.13.1.20.0 = INTEGER: 2                  (Memory condition (1=other, 2=ok, 3=degraded, 4=degradedModuleIndexUnknown)
+#    SNMPv2-SMI::enterprises.232.6.2.14.13.1.20.1 = INTEGER: 2                  (Memory condition (1=other, 2=ok, 3=degraded, 4=degradedModuleIndexUnknown)
+#    SNMPv2-SMI::enterprises.232.6.2.14.13.1.20.2 = INTEGER: 2                  (Memory condition (1=other, 2=ok, 3=degraded, 4=degradedModuleIndexUnknown)
+#    SNMPv2-SMI::enterprises.232.6.2.14.13.1.20.3 = INTEGER: 2                  (Memory condition (1=other, 2=ok, 3=degraded, 4=degradedModuleIndexUnknown)
+#
+#
+#    $ /usr/bin/snmpwalk  -v 1 -c public ilo .1.3.6.1.4.1.232.3.2.5.1.1.37.0   #OID for Physical Drive Condition (1=other, 2=ok, 3=degraded, 4=failed)
+#    SNMPv2-SMI::enterprises.232.3.2.5.1.1.37.0.0 = INTEGER: 2                 <--- this server has two physical disks
+#    SNMPv2-SMI::enterprises.232.3.2.5.1.1.37.0.1 = INTEGER: 2                 <--- this server has two physical disks
+#
+#
+#    $ /usr/bin/snmpwalk  -v 1 -c public ilo .1.3.6.1.4.1.232.3.2.3.1.1.4.0    #OID for Logical Drive Status (1=other, 2=ok, 3=Failed, 4=Unconfigured, 5=Recovering, 6=Ready Rebuild, 7=Rebuilding, 8=Wrong Drive, 9=Bad Connect,
+#    SNMPv2-SMI::enterprises.232.3.2.3.1.1.4.0.1 = INTEGER: 2                 <--- this server has a single logical drive (probably a RAID-1 mirror of 2 physical disks)
+#
+#    $ /usr/bin/snmpwalk  -v 1 -c public ilo 1.3.6.1.4.1.232.6.2.6.7.1.9.0     #OID for Fan Condition (1=other, 2=ok, 3=degraded, 4=failed)
+#    SNMPv2-SMI::enterprises.232.6.2.6.7.1.9.0.1 = INTEGER: 2                  <--- this server has 7 fans
+#    SNMPv2-SMI::enterprises.232.6.2.6.7.1.9.0.2 = INTEGER: 2
+#    SNMPv2-SMI::enterprises.232.6.2.6.7.1.9.0.3 = INTEGER: 2
+#    SNMPv2-SMI::enterprises.232.6.2.6.7.1.9.0.4 = INTEGER: 2
+#    SNMPv2-SMI::enterprises.232.6.2.6.7.1.9.0.5 = INTEGER: 2
+#    SNMPv2-SMI::enterprises.232.6.2.6.7.1.9.0.6 = INTEGER: 2
+#    SNMPv2-SMI::enterprises.232.6.2.6.7.1.9.0.7 = INTEGER: 2
+#
+#    $ /usr/bin/snmpget  -v 1 -c public ilo  1.3.6.1.4.1.232.6.2.9.1.0        #OID for cpqHeFltTolPwrSupplyCondition overall condition of the fault tolerant  power supply sub-system.  (1=other, 2=ok, 3=degraded, 4=failed)
+#    SNMPv2-SMI::enterprises.232.6.2.9.1.0 = INTEGER: 2                       <--- there are multiple power supplies, but this single value shows overall power supply redundancy status
+#
+
+
+
+
+
+use diagnostics;                                #tell the perl interpreter to give us verbose messages while debugging
+use strict;                                     #enforce good coding practices
+use Getopt::Long;				# require perl module.  Should be in base  perl install.  Or install with:  perl -MCPAN -e 'install Getopt::Long'
+
+
+
+
+# define variables
+my ($snmpwalk,$snmpget,$community,$host,$oid);
+my ($opt_h,$opt_H,$opt_C,$opt_v);
+my ($verbose,$cmd,%device);
+#my ($temperature_ambient,$system_health,$power_status);
+my ($model_base,$model_subtype,$model_serial,$model_desc,$model_uuid);
+my ($memory_size_gb,$cpu_sockets,$cpu_cores,$cpu_threads,$cpu_speed);
+my ($ping,$pingstatus,$nslookup,$nslookup_status,$outputfile,$output_message,$perf_data);
+my ($epoch,$dev,$ino,$mode,$nlink,$uid,$gid,$rdev,$size,$atime,$mtime,$ctime,$blksize,$blocks);
+my ($OK,$WARN,$CRITICAL,$UNKNOWN,$CHECK_NAME);				#define variables
+$verbose             = "no";						#yes/no flag for verbose output for debugging
+$ping                = "/bin/ping";              			#location of binary
+$nslookup            = "/bin/nslookup";          			#location of binary
+$snmpwalk            = "/usr/bin/snmpwalk";				#location of binary
+$snmpget             = "/usr/bin/snmpget";				#location of binary
+$community           = "public";					#SNMP community string 
+$CHECK_NAME          = "HP ILO4";					#define name of nagios check
+#
+# Nagios return codes
+#
+$OK=            0;                              			#this script returns a value to nagios for processing
+$WARN=          1;                              			#this script returns a value to nagios for processing
+$CRITICAL=      2;                              			#this script returns a value to nagios for processing
+$UNKNOWN=       3;                              			#this script returns a value to nagios for processing
+
+
+
+
+sub get_options {
+   #
+   # this gets the command line parameters provided by the users
+   #
+   Getopt::Long::Configure('bundling');
+   GetOptions(
+      "h"   => \$opt_h, "help"        => \$opt_h,
+      "v"   => \$opt_v, "verbose"     => \$opt_v,
+      "C=s" => \$opt_C, "community=s" => \$opt_C, 
+      "H=s" => \$opt_H, "host=s"      => \$opt_H, 
+   );
+   #
+   # If the user provided -h or --help value, print the help.
+   #
+   if( defined( $opt_h ) ) {
+      print "Use this syntax: $0 -H hostname -C snmp_community_name \n";
+      exit $UNKNOWN;				#exit script
+   }
+   #
+   # If the user supplied -v or --verbose switch, increase script output verbosity for debugging
+   if( defined( $opt_v ) ) {
+      $verbose = "yes";
+   }
+   #
+   # If the user did not supply a -c or --community= value, use the default.
+   #
+   if( defined( $opt_C ) ) {
+      $community = $opt_C;
+   } else {
+      $community = "public";
+   }
+   #
+   # If the user did not supply a -H or --host== value, generate a warning.
+   #
+   if( defined( $opt_H ) ) {
+      $host = $opt_H;
+   } else {
+      print "$CHECK_NAME Unknown - cannot determine remote host \n";
+      exit $UNKNOWN;				#exit script
+   }						#end of if/else block
+}  			                     	#end of subroutine
+
+
+
+
+
+
+sub sanity_checks {
+   #
+   print "running sanity_checks subroutine \n" if ($verbose eq "yes");
+   #
+   # figure out where the snmpget command is on this system (varies across UNIX flavors)
+   $snmpget = "/usr/sbin/snmpinfo"      if ( -e "/usr/sbin/snmpinfo" );		#location on AIX
+   $snmpget = "/usr/bin/snmpget"        if ( -e "/usr/bin/snmpget" );		#location on Linux
+   $snmpget = "/usr/local/bin/snmpget"  if ( -e "/usr/local/bin/snmpget" );
+   if( ! defined( $snmpget) ) {
+      print "$CHECK_NAME Unknown - cannot locate snmpget binary\n";
+      exit $UNKNOWN;								#exit script
+   }										#end of if block
+   if( ! -x  $snmpget ) {
+      print "$CHECK_NAME Unknown - $snmpget is not executable\n";
+      exit $UNKNOWN;								#exit script
+   }										#end of if block
+   #
+   # Confirm /etc/mib.defs is readable on AIX
+   if ( -f "/etc/mib.defs" ) {							#check to see if file exists
+      if ( ! -r "/etc/mib.defs" ) {						#check to see if file is readable
+         print "$CHECK_NAME Unknown - /etc/mib.defs is not readable by the current user \n";
+         exit $UNKNOWN;								#exit script
+      } 									#end of if block
+   } 										#end of if block
+   #
+   # confirm the nslookup binary exists
+   #
+   if ( ! -f "$nslookup" ) {
+      print "ERROR: Cannot find $nslookup \n";
+      exit;
+   }
+   if ( ! -x "$nslookup" ) {
+      print "ERROR: $nslookup is not executable by the current user\n";
+      exit;
+   }
+   #
+   # confirm the ping binary exists
+   #
+   $ping = "/bin/ping"     if ( -f "/bin/ping");        			#different UNIX flavours put binary in different places
+   $ping = "/etc/ping"     if ( -f "/etc/ping");        			#different UNIX flavours put binary in different places
+   $ping = "/usr/bin/ping" if ( -f "/usr/bin/ping");   		 		#different UNIX flavours put binary in different places
+   if( ! -f $ping ) {
+      print "$CHECK_NAME Unknown - cannot locate $ping binary\n";
+      exit $UNKNOWN;                            				#exit script
+   }                                            				#end of if block
+   if( ! -x  $ping ) {
+      print "$CHECK_NAME Unknown - $ping is not executable\n";
+      exit $UNKNOWN;                            				#exit script
+   }                                            				#end of if block
+}		 								#end of subroutine
+
+
+
+
+sub check_name_resolution {
+   #
+   print "running check_name_resolution subroutine \n" if ($verbose eq "yes");
+   #
+   # confirm valid name resolution exists for $host
+   #
+   $nslookup_status = "";							#initialize variable to avoid undef errors
+   if( ! open( NSLOOKUP, "$nslookup $host 2>&1|" ) ) {
+      warn "WARNING: nslookup $host failed: $!\n";
+      return 0;
+   }
+   while (<NSLOOKUP>) {                                                         #read a line from STDIN
+      if (/failed/) {                                                           #look for error message from nslookup
+         $nslookup_status = "failed";                                           #set flag value for $nslookup variable
+      }                                                                         #end of if block
+      if (/SERVFAIL/) {                                                         #look for error message from nslookup
+         $nslookup_status = "failed";                                           #set flag value for $nslookup variable
+      }                                                                         #end of if block
+   }                                                                            #end of while loop
+   close NSLOOKUP;                                                              #close filehandle
+   if ( $nslookup_status eq "failed" ) {                                        #check for flag value
+      print "$CHECK_NAME CRITICAL: no name resolution for $host - please add $host to DNS \n";
+      exit $CRITICAL;                                                           #exit script
+   }                                                                            #end of if block
+}
+
+
+
+sub ping_remote_host {
+   #
+   print "running ping_remote_host subroutine \n" if ($verbose eq "yes");
+   #
+   # Confirm the remote host is up
+   #
+   print "   trying to ping $host \n" if ($verbose eq "yes");
+   $cmd = "$ping -c 1 -w 1 $host";
+   print "   running command: $cmd \n" if ($verbose eq "yes");
+   open(IN,"$cmd 2>&1|");                       #send a single ping to the remote host and wait 1 second for a reply
+   while (<IN>) {                                  #read a line from STDIN
+      if ( /1 packets transmitted, 1 received, 0% packet loss/ ) {                  #ping success
+         print "   ping check succeeded \n" if ($verbose eq "yes");
+      }                                         #end of if block
+      if ( /100% packet loss/ ) {                  #check for ping timeouts (indicates host may be down)
+         $pingstatus = "$CHECK_NAME UNKNOWN -- no ping reply from $host \n";
+          print $pingstatus;                        #print error message
+          exit $UNKNOWN;                            #exit script
+      }                                            #end of if block
+      if ( /NOT FOUND/ ) {                         #check for invalid hostname (using AIX ping)
+         $pingstatus = "$CHECK_NAME UNKNOWN -- could not resolve hostname $host - please check DNS\n";
+         print $pingstatus;                        #print error message
+         exit $UNKNOWN;                            #exit script
+      }                                            #end of if block
+      if ( /Name or service not known/ ) {         #check for invalid hostname (using Linux ping)
+         $pingstatus = "$CHECK_NAME UNKNOWN -- could not resolve hostname $host - please check DNS\n";
+         print $pingstatus;                        #print error message
+         exit $UNKNOWN;                            #exit script
+      }                                            #end of if block
+      if ( /unknown host/ ) {                      #check for invalid hostname (using Linux ping)
+         $pingstatus = "$CHECK_NAME UNKNOWN -- could not resolve hostname $host - please check DNS\n";
+         print $pingstatus;                        #print error message
+         exit $UNKNOWN;                            #exit script
+      }                                            #end of if block
+      if ( /no route to host/ ) {                  #check for routing problems
+         $pingstatus = "$CHECK_NAME UNKNOWN -- could not find a route to $host - check routing tables \n";
+         print $pingstatus;                        #print error message
+         exit $UNKNOWN;                            #exit script
+      }                                            #end of if block
+   }                                               #end of while loop
+   close IN;                                       #close filehandle
+}                                                       #end of subroutine
+
+
+
+sub check_for_output_file {
+   #
+   # a cron job may have already created the output file that we need
+   #
+   print "running check_for_output_file subroutine \n" if ($verbose eq "yes");
+   #
+   unless ($host) {
+      print "$CHECK_NAME UNKNOWN - Could not determine hostname or IP address for host $host \n";
+      exit $UNKNOWN;
+   }                                                                            #end of unless block
+   $outputfile = "/tmp/nagios.check_hp_ilo4.$host";                             #name of temporary file
+   print"   checking for existence of temporary file $outputfile \n" if ($verbose eq "yes");
+   #
+   # delete the output file if it is more than 15 minutes old
+   if ( -e "$outputfile" ) {                                                    #see if a cron job has already provided the info we need
+      $epoch = time();                                                          #number of seconds since the epoch
+      ($dev,$ino,$mode,$nlink,$uid,$gid,$rdev,$size,$atime,$mtime,$ctime,$blksize,$blocks) = stat($outputfile);
+      if ( ($epoch - $mtime) > (60 * 15) ) {                                    #mtime is last file modification time in seconds since the epoch
+         print "   deleting obsolete file $outputfile \n" if ($verbose eq "yes");
+         unlink "$outputfile";                                                  #delete file if it is too old to be of any use
+         # confirm the file was deleted
+         if ( -e "$outputfile" ) {
+            print "$CHECK_NAME UNKNOWN - Could not delete temporary file $outputfile - please check file permissions \n";
+            exit $UNKNOWN;
+         }                                                                      #end of if block
+      }                                                                         #end of if block
+   }                                                                            #end of if block
+   #
+   if ( -e "$outputfile" ) {                                                    #see if a cron job has already provided the info we need
+      print "   found existing file $outputfile - using that for check output \n" if ($verbose eq "yes");
+      open (OUT,"$outputfile") or die "Cannot open $outputfile for reading $! \n";
+      while (<OUT>) {                                                           #read a line from the text file
+         $output_message = $_  if ( $_ =~ /[a-zA-Z]/);                          #get the content of the output file into a variable
+      }                                                                         #end of while loop
+      close OUT;                                                                #close filehandle
+      print $output_message;                                                    #print the content of the output file
+      exit $CRITICAL if ( $output_message =~ /CRITICAL/ );                      #exit script with appropriate return code
+      exit $WARN     if ( $output_message =~ /WARN/ );                          #exit script with appropriate return code
+      exit $UNKNOWN  if ( $output_message =~ /UNKNOWN/ );                       #exit script with appropriate return code
+      exit $OK       if ( $output_message =~ /OK/ );                            #exit script with appropriate return code
+      exit $UNKNOWN;                                                            #only get this far if OK/WARN/CRITICAL/UNKNOWN was not found in the output file
+   }                                                                            #end of if block
+}                                                                               #end of subroutine
+
+
+
+sub print_to_outputfile {
+   #
+   print "running print_to_outputfile \n" if ($verbose eq "yes");
+   #
+   # This subroutine is called whenever an output message is printed, to confirm that the $outputfile exists
+   #
+   # confirm the output message exists
+   unless ($output_message =~ /[a-zA-Z]+/ ) {                                   #check to see if $output_message is empty
+      print "   ERROR - possible script bug, cannot find anything in the \$output_message variable \n" if ($verbose eq "yes");
+      $output_message = "$CHECK_NAME UNKNOWN - could not parse response from storage system \n";
+   }                                                                            #end of unless block
+   print "   Writing this value to outputfile $outputfile : $output_message " if ($verbose eq "yes");
+   #
+   # confirm the $outputfile variable is defined
+   unless ($outputfile) {
+      print "$CHECK_NAME UNKNOWN - the \$outputfile variable is not defined.  This might be a script bug. \n";
+      exit $UNKNOWN;                                                            #only get this far if OK/WARN/CRITICAL/UNKNOWN was not found in the output file
+   }                                                                            #end of unless block
+   #
+   if ( ! -e "$outputfile" ) {                                                  #only run this section if $outputfile does not already exist
+      print "   $outputfile not found - writing output message to $outputfile \n" if ($verbose eq "yes");
+      open (OUT,">$outputfile") or die "Cannot open $outputfile for writing: $! \n";
+      print OUT "$output_message";
+      close OUT;                                                                #close filehandle
+   }                                                                            #end of if block
+}                                                                               #end of subroutine
+
+
+
+
+
+sub verify_snmp {
+   #
+   print "running verify_snmp subroutine \n" if ($verbose eq "yes");
+   #
+   # Since all the following subroutines depend on SNMP connectivity, 
+   # verify that the remote host responds to SNMP queries.
+   #
+   # Expect output similar to the following if using snmpget
+   # .1.3.6.1.2.1.1.1.0 Integrated Lights-Out 4 2.70 May 07 2019
+   #  
+   # Expect output similar to the following if using snmpinfo
+   # .1.3.6.1.2.1.1.1.0 = Integrated Lights-Out 4 2.70 May 07 2019
+   #  
+   #
+   $device{sysDescr} = "unknown";				#initialize hash element to avoid undef errors
+   $oid = "1.3.6.1.2.1.1.1.0";
+   $cmd = "$snmpget -Onq -v 1 -c $community $host $oid" if ($snmpget =~ /snmpget/);	#Linux command
+   $cmd = "$snmpget -m get -c $community -h $host $oid" if ($snmpget =~ /snmpinfo/);	#AIX    command
+   print "   running $cmd \n" if ($verbose eq "yes");
+   open (IN,"$cmd |");						#open filehandle
+   while (<IN>) {						#read a line from the filehandle
+      s/\"//g;							#get rid of any quotation marks in the output
+      s/=//g;							#get rid of any equal sign in the output
+      if ( /[0-9\.]+ +([a-zA-Z0-9\-\. ]+)/) {			#parse out the line of output into OID and value
+         $device{sysDescr} = $1;				#assign more meaningful variable name
+         print "   found system description $device{sysDescr}  \n" if ($verbose eq "yes");
+      }								#end of if block
+   }								#end of while loop
+   close IN;							#close filehandle
+   if ( $device{sysDescr} eq "unknown" ) {
+      $output_message = "$CHECK_NAME UNKNOWN - Could not query the HP ILO via SNMP.  Please verify SNMP community name and confirm SNMP is enabled on the service processor. \n";
+      print "$output_message";     				#print output to screen
+      print_to_outputfile;         				#call subroutine to confirm the output is in the $outputfile used for subsequent script runs
+      exit $UNKNOWN;
+   }								#end of if block
+}		 						#end of subroutine
+
+
+
+sub get_temperature {
+   #
+   print "running get_temperature subroutine \n" if ($verbose eq "yes");
+   #
+   # Expect output similar to the following if using snmpget
+   # .1.3.6.1.4.1.232.6.2.6.8.1.4.0.1 27
+   #  
+   # Expect output similar to the following if using snmpinfo
+   # .1.3.6.1.4.1.232.6.2.6.8.1.4.0.1 = 27
+   #  
+   #
+   $device{ChassisInletTemperatureC} = 0;                           #initialize hash element
+   $oid = "1.3.6.1.4.1.232.6.2.6.8.1.4.0.1";
+   $cmd = "$snmpget -Onq -v 1 -c $community $host $oid" if ($snmpget =~ /snmpget/);	#Linux command
+   $cmd = "$snmpget -m get -c $community -h $host $oid" if ($snmpget =~ /snmpinfo/);	#AIX    command
+   print "   running $cmd \n" if ($verbose eq "yes");
+   open (IN,"$cmd |");						#open filehandle
+   while (<IN>) {						#read a line from the filehandle
+      s/\"//g;							#get rid of any quotation marks in the output
+      s/=//g;							#get rid of any equal sign in the output
+      if ( /[0-9\.]+ +([0-9]+)/) {				#parse out the line of output into OID and value
+         $device{ChassisInletTemperatureC} = $1;				#assign more meaningful variable name
+         print "   found ambient temperature $device{ChassisInletTemperatureC}C  \n" if ($verbose eq "yes");
+      }								#end of if block
+   }								#end of while loop
+   close IN;							#close filehandle
+}		 						#end of subroutine
+
+
+
+sub get_power_redundancy {
+   #
+   print "running get_power_redundancy subroutine \n" if ($verbose eq "yes");
+   #
+   # Expect output similar to the following if using snmpget
+   # .1.3.6.1.4.1.232.6.2.9.1.0 2
+   #  
+   # Expect output similar to the following if using snmpinfo
+   # .1.3.6.1.4.1.232.6.2.9.1.0 = 2
+   #  
+   #
+   $device{cpqHeFltTolPwrSupplyCondition} = "unknown";                           #initialize hash element
+   $oid = "1.3.6.1.4.1.232.6.2.9.1.0";
+   $cmd = "$snmpget -Onq -v 1 -c $community $host $oid" if ($snmpget =~ /snmpget/);	#Linux command
+   $cmd = "$snmpget -m get -c $community -h $host $oid" if ($snmpget =~ /snmpinfo/);	#AIX    command
+   print "   running command to get hpilo4 power supply redundancy: $cmd \n" if ($verbose eq "yes");
+   open (IN,"$cmd |");						#open filehandle
+   while (<IN>) {						#read a line from the filehandle
+      s/\"//g;							#get rid of any quotation marks in the output
+      s/=//g;							#get rid of any equal sign in the output
+      if ( /[0-9\.]+ +([0-9]+)/) {				#parse out the line of output into OID and value
+         $device{cpqHeFltTolPwrSupplyCondition} = $1;                            #capture status of power supply redundancy
+         $device{cpqHeFltTolPwrSupplyCondition} = "other"    if ( $device{cpqHeFltTolPwrSupplyCondition} eq "1" );  #convert from integer to humand readable value
+         $device{cpqHeFltTolPwrSupplyCondition} = "ok"       if ( $device{cpqHeFltTolPwrSupplyCondition} eq "2" );  #convert from integer to humand readable value
+         $device{cpqHeFltTolPwrSupplyCondition} = "degraded" if ( $device{cpqHeFltTolPwrSupplyCondition} eq "3" );  #convert from integer to humand readable value
+         $device{cpqHeFltTolPwrSupplyCondition} = "failed"   if ( $device{cpqHeFltTolPwrSupplyCondition} eq "4" );  #convert from integer to humand readable value
+         print "   found power redundancy status $device{cpqHeFltTolPwrSupplyCondition}  \n" if ($verbose eq "yes");
+      }								#end of if block
+   }								#end of while loop
+   close IN;							#close filehandle
+}		 						#end of subroutine
+
+
+
+
+sub get_fan_status {
+   #
+   print "running get_fan_status subroutine \n" if ($verbose eq "yes");
+   #
+   # Expect output similar to the following if using snmpget
+   # .1.3.6.1.4.1.232.6.2.6.7.1.9.0 2
+   #  
+   # Expect output similar to the following if using snmpinfo
+   # .1.3.6.1.4.1.232.6.2.6.7.1.9.0 = 2
+   #  
+   #
+   $device{fans}{count} = 0;                                                     #initialize hash element
+   $device{fans}{ok}    = 0;                                                     #initialize hash element
+   $oid = "1.3.6.1.4.1.232.6.2.6.7.1.9.0";
+   $cmd = "$snmpwalk -Onq -v 1 -c $community $host $oid" if ($snmpget =~ /snmpget/);	#Linux command
+   $cmd = "$snmpget -m dump -c $community -h $host $oid" if ($snmpget =~ /snmpinfo/);	#AIX    command
+   print "   running command to get hpilo4 fan status: $cmd \n" if ($verbose eq "yes");
+   open (IN,"$cmd |");						#open filehandle
+   while (<IN>) {						#read a line from the filehandle
+      s/\"//g;							#get rid of any quotation marks in the output
+      s/=//g;							#get rid of any equal sign in the output
+      if ( /[0-9\.]+ +([0-9]+)/) {				#parse out the line of output into OID and value
+         if ( /[0-9\.]+ ([0-9]+)/ ) { $device{fans}{count}++; }                  #increment counter variable for the status of all physical disks
+         if ( /[0-9\.]+ 2/        ) { $device{fans}{ok}++;    }                  #increment counter variable for the number of physical disks in "ok" status
+      }								#end of if block
+   }								#end of while loop
+   close IN;							#close filehandle
+   $device{fans}{not_ok} = $device{fans}{count} - $device{fans}{ok};
+   print "   fan_count:$device{fans}{count} fan_ok:$device{fans}{ok} fan_not_ok:$device{fans}{not_ok} \n" if ($verbose eq "yes");
+}		 						#end of subroutine
+
+
+
+
+sub get_physical_disk_status {
+   #
+   print "running get_physical_disk_status subroutine \n" if ($verbose eq "yes");
+   #
+   # Expect output similar to the following if using snmpget
+   # .1.3.6.1.4.1.232.3.2.5.1.1.37.0.0 2
+   # .1.3.6.1.4.1.232.3.2.5.1.1.37.0.1 2
+   # .1.3.6.1.4.1.232.3.2.5.1.1.37.0.2 2
+
+   #  
+   # Expect output similar to the following if using snmpinfo
+   # .1.3.6.1.4.1.232.3.2.5.1.1.37.0.0 = 2
+   # .1.3.6.1.4.1.232.3.2.5.1.1.37.0.1 = 2
+   # .1.3.6.1.4.1.232.3.2.5.1.1.37.0.2 = 2
+   #  
+   #
+   $device{physical_disks}{count} = 0;                                                     #initialize hash element
+   $device{physical_disks}{ok}    = 0;                                                     #initialize hash element
+   $oid = "1.3.6.1.4.1.232.3.2.5.1.1.37.0";
+   $cmd = "$snmpwalk -Onq -v 1 -c $community $host $oid" if ($snmpget =~ /snmpget/);	#Linux command
+   $cmd = "$snmpget -m dump -c $community -h $host $oid" if ($snmpget =~ /snmpinfo/);	#AIX    command
+   print "   running command to get hpilo4 physical disk status: $cmd \n" if ($verbose eq "yes");
+   open (IN,"$cmd |");						#open filehandle
+   while (<IN>) {						#read a line from the filehandle
+      s/\"//g;							#get rid of any quotation marks in the output
+      s/=//g;							#get rid of any equal sign in the output
+      if ( /[0-9\.]+ +([0-9]+)/) {				#parse out the line of output into OID and value
+         if ( /[0-9\.]+ ([0-9]+)/ ) { $device{physical_disks}{count}++; }                  #increment counter variable for the status of all physical disks
+         if ( /[0-9\.]+ 2/        ) { $device{physical_disks}{ok}++;    }                  #increment counter variable for the number of physical disks in "ok" status
+      }								#end of if block
+   }								#end of while loop
+   close IN;							#close filehandle
+   $device{physical_disks}{not_ok} = $device{physical_disks}{count} - $device{physical_disks}{ok};
+   print "   physical_disks_count:$device{physical_disks}{count} physical_disks_ok:$device{physical_disks}{ok} physical_disks_not_ok:$device{physical_disks}{not_ok} \n" if ($verbose eq "yes");
+}		 						#end of subroutine
+
+
+
+
+sub get_logical_disk_status {
+   #
+   print "running get_logical_disk_status subroutine \n" if ($verbose eq "yes");
+   #
+   # Expect output similar to the following if using snmpget
+   # .1.3.6.1.4.1.232.3.2.3.1.1.4.0.1 2
+   # .1.3.6.1.4.1.232.3.2.3.1.1.4.0.2 2
+   #  
+   # Expect output similar to the following if using snmpinfo
+   # .1.3.6.1.4.1.232.3.2.3.1.1.4.0.1 = 2
+   # .1.3.6.1.4.1.232.3.2.3.1.1.4.0.2 = 2
+   #  
+   #
+   $device{logical_disks}{count} = 0;                                                     #initialize hash element
+   $device{logical_disks}{ok}    = 0;                                                     #initialize hash element
+   $oid = "1.3.6.1.4.1.232.3.2.3.1.1.4.0";
+   $cmd = "$snmpwalk -Onq -v 1 -c $community $host $oid" if ($snmpget =~ /snmpget/);	#Linux command
+   $cmd = "$snmpget -m dump -c $community -h $host $oid" if ($snmpget =~ /snmpinfo/);	#AIX    command
+   print "   running command to get hpilo4 logical disk status: $cmd \n" if ($verbose eq "yes");
+   open (IN,"$cmd |");						#open filehandle
+   while (<IN>) {						#read a line from the filehandle
+      s/\"//g;							#get rid of any quotation marks in the output
+      s/=//g;							#get rid of any equal sign in the output
+      if ( /[0-9\.]+ +([0-9]+)/) {				#parse out the line of output into OID and value
+         if ( /[0-9\.]+ ([0-9]+)/ ) { $device{logical_disks}{count}++; }                  #increment counter variable for the status of all logical disks
+         if ( /[0-9\.]+ 2/        ) { $device{logical_disks}{ok}++;    }                  #increment counter variable for the number of logical disks in "ok" status
+      }								#end of if block
+   }								#end of while loop
+   close IN;							#close filehandle
+   $device{logical_disks}{not_ok} = $device{logical_disks}{count} - $device{logical_disks}{ok};
+   print "   logical_disks_count:$device{logical_disks}{count} logical_disks_ok:$device{logical_disks}{ok} logical_disks_not_ok:$device{logical_disks}{not_ok} \n" if ($verbose eq "yes");
+}		 						#end of subroutine
+
+
+
+
+sub get_processor_status {
+   #
+   print "running get_processor_status subroutine \n" if ($verbose eq "yes");
+   #
+   # Expect output similar to the following if using snmpget
+   # .1.3.6.1.4.1.232.1.2.2.1.1.6.0 2
+   # .1.3.6.1.4.1.232.1.2.2.1.1.6.1 2
+
+   #  
+   # Expect output similar to the following if using snmpinfo
+   # .1.3.6.1.4.1.232.1.2.2.1.1.6.0 = 2
+   # .1.3.6.1.4.1.232.1.2.2.1.1.6.1 = 2
+   #  
+   #
+   $device{processor_status}{count} = 0;                                                     #initialize hash element
+   $device{processor_status}{ok}    = 0;                                                     #initialize hash element
+   $oid = "1.3.6.1.4.1.232.1.2.2.1.1.6";
+   $cmd = "$snmpwalk -Onq -v 1 -c $community $host $oid" if ($snmpget =~ /snmpget/);	#Linux command
+   $cmd = "$snmpget -m dump -c $community -h $host $oid" if ($snmpget =~ /snmpinfo/);	#AIX    command
+   print "   running command to get hpilo4 processor status: $cmd \n" if ($verbose eq "yes");
+   open (IN,"$cmd |");						#open filehandle
+   while (<IN>) {						#read a line from the filehandle
+      s/\"//g;							#get rid of any quotation marks in the output
+      s/=//g;							#get rid of any equal sign in the output
+      if ( /[0-9\.]+ +([0-9]+)/) {				#parse out the line of output into OID and value
+         if ( /[0-9\.]+ ([0-9]+)/ ) { $device{processor_status}{count}++; }                  #increment counter variable for the status of all processors
+         if ( /[0-9\.]+ 2/        ) { $device{processor_status}{ok}++;    }                  #increment counter variable for the number of processors in "ok" status
+      }								#end of if block
+   }								#end of while loop
+   close IN;							#close filehandle
+   $device{processor_status}{not_ok} = $device{processor_status}{count} - $device{processor_status}{ok};
+   print "   processor_status_count:$device{processor_status}{count} processor_status_ok:$device{processor_status}{ok} processor_status_not_ok:$device{processor_status}{not_ok} \n" if ($verbose eq "yes");
+}		 						#end of subroutine
+
+
+
+sub get_memory_module_status {
+   #
+   print "running get_memory_module_status subroutine \n" if ($verbose eq "yes");
+   #
+   # Expect output similar to the following if using snmpget
+   # .1.3.6.1.4.1.232.6.2.14.13.1.20.0 2
+   # .1.3.6.1.4.1.232.6.2.14.13.1.20.1 2
+   # .1.3.6.1.4.1.232.6.2.14.13.1.20.2 2
+   # .1.3.6.1.4.1.232.6.2.14.13.1.20.3 2
+   # .1.3.6.1.4.1.232.6.2.14.13.1.20.4 2
+   # .1.3.6.1.4.1.232.6.2.14.13.1.20.5 2
+   # .1.3.6.1.4.1.232.6.2.14.13.1.20.6 2
+   # .1.3.6.1.4.1.232.6.2.14.13.1.20.7 2
+   #  
+   # Expect output similar to the following if using snmpinfo
+   # .1.3.6.1.4.1.232.6.2.14.13.1.20.0 = 2
+   # .1.3.6.1.4.1.232.6.2.14.13.1.20.1 = 2
+   # .1.3.6.1.4.1.232.6.2.14.13.1.20.2 = 2
+   # .1.3.6.1.4.1.232.6.2.14.13.1.20.3 = 2
+   # .1.3.6.1.4.1.232.6.2.14.13.1.20.4 = 2
+   # .1.3.6.1.4.1.232.6.2.14.13.1.20.5 = 2
+   # .1.3.6.1.4.1.232.6.2.14.13.1.20.6 = 2
+   # .1.3.6.1.4.1.232.6.2.14.13.1.20.7 = 2
+   #  
+   #
+   $device{memory_module_status}{count} = 0;                                                     #initialize hash element
+   $device{memory_module_status}{ok}    = 0;                                                     #initialize hash element
+   $oid = "1.3.6.1.4.1.232.6.2.14.13.1.20";
+   $cmd = "$snmpwalk -Onq -v 1 -c $community $host $oid" if ($snmpget =~ /snmpget/);	#Linux command
+   $cmd = "$snmpget -m dump -c $community -h $host $oid" if ($snmpget =~ /snmpinfo/);	#AIX    command
+   print "   running command to get hpilo4 memory module status: $cmd \n" if ($verbose eq "yes");
+   open (IN,"$cmd |");						#open filehandle
+   while (<IN>) {						#read a line from the filehandle
+      s/\"//g;							#get rid of any quotation marks in the output
+      s/=//g;							#get rid of any equal sign in the output
+      if ( /[0-9\.]+ +([0-9]+)/) {				#parse out the line of output into OID and value
+         if ( /[0-9\.]+ ([0-9]+)/ ) { $device{memory_module_status}{count}++; }                  #increment counter variable for the status of all memory modules
+         if ( /[0-9\.]+ 2/        ) { $device{memory_module_status}{ok}++;    }                  #increment counter variable for the number of memory modules in "ok" status
+      }								#end of if block
+   }								#end of while loop
+   close IN;							#close filehandle
+   $device{memory_module_status}{not_ok} = $device{memory_module_status}{count} - $device{memory_module_status}{ok};
+   print "   memory_module_status_count:$device{memory_module_status}{count} memory_module_status_ok:$device{memory_module_status}{ok} memory_module_status_not_ok:$device{memory_module_status}{not_ok} \n" if ($verbose eq "yes");
+}		 						#end of subroutine
+
+
+
+
+
+
+
+sub print_output {
+   #
+   print "running print_output subroutine \n" if ($verbose eq "yes");
+   #
+   # The nagios performance data will be the same for all the outputs, so just put it in a variable that can be use by all the output options
+   #
+   # The format is:  label=value[UOM];[warn];[crit];[min];[max]
+   # On the "label=value" section is required.  The warn|crit|min|max entries are optional.
+   # You can have multiple items of perf data, just separate each section with a space
+   # UOM is Units Of Measurement.    Can be s=seconds B=bytes MB=megabytes %=percent c=counter
+   # You can use the standard nagios ranges and thresholds formats (examples below)
+   # Range definition   Generate an alert if x...
+   # ----------------   -------------------------
+   # 10                 < 0 or > 10, (outside the range of {0 .. 10})
+   # 10:                < 10, (outside {10 .. ∞})
+   # ~:10               > 10, (outside the range of {-∞ .. 10})
+   # 10:20              < 10 or > 20, (outside the range of {10 .. 20})
+   # @10:20             ≥ 10 and ≤ 20, (inside the range of {10 .. 20})
+   #
+   $perf_data = "AmbientTemperatureC=$device{ChassisInletTemperatureC};;;;";
+   #
+
+   # build an output message that contains all the information
+   $output_message = "Ambient_Temperature:$device{ChassisInletTemperatureC}C Power_Redundancy:$device{cpqHeFltTolPwrSupplyCondition} Fan_Status:$device{fans}{count}/$device{fans}{ok}ok Physical_Disks:$device{physical_disks}{count}/$device{physical_disks}{ok}ok Logical_disks:$device{logical_disks}{count}/$device{logical_disks}{ok}ok Processors:$device{processor_status}{count}/$device{processor_status}{ok}ok Memory_Modules:$device{memory_module_status}{count}/$device{memory_module_status}{ok}ok | $perf_data";
+   #
+   # alert if the ambient temperature is too high
+   #
+   if ( $device{ChassisInletTemperatureC} eq "unknown" ) {
+      $output_message = "$CHECK_NAME UNKNOWN - Could not get ambient temperature via SNMP.  $output_message \n";
+      print "$output_message";     				#print output to screen
+      print_to_outputfile;         				#call subroutine to confirm the output is in the $outputfile used for subsequent script runs
+      exit $UNKNOWN;
+   }								#end of if block
+   if ( $device{ChassisInletTemperatureC} > 30 ) {
+      $output_message = "$CHECK_NAME CRITICAL - ambient temperature is $device{ChassisInletTemperatureC} degrees celsius.  The air conditioning may have failed.  $output_message \n";
+      print "$output_message";     				#print output to screen
+      print_to_outputfile;         				#call subroutine to confirm the output is in the $outputfile used for subsequent script runs
+      exit $CRITICAL;
+   }								#end of if block
+   if ( $device{ChassisInletTemperatureC} > 25 ) {
+      $output_message = "$CHECK_NAME WARN - ambient temperature is $device{ChassisInletTemperatureC} degrees celsius.  The air conditioning may have failed.  $output_message \n";
+      print "$output_message";     				#print output to screen
+      print_to_outputfile;         				#call subroutine to confirm the output is in the $outputfile used for subsequent script runs
+      exit $WARN;
+   }								#end of if block
+   #
+   # Check power redundancy
+   #
+   if ( $device{cpqHeFltTolPwrSupplyCondition} ne "ok" ) {
+      $output_message = "$CHECK_NAME WARN - power supply reundancy is $device{cpqHeFltTolPwrSupplyCondition}.  Please confirm all power supplies are plugged in and are operational.  $output_message \n";
+      print "$output_message";     				#print output to screen
+      print_to_outputfile;         				#call subroutine to confirm the output is in the $outputfile used for subsequent script runs
+      exit $WARN;
+   }								#end of if block
+   #
+   # Check fans
+   #
+   if ( $device{fans}{not_ok} > 0 ) {
+      $output_message = "$CHECK_NAME WARN - found $device{fans}{not_ok} failed fans.  $output_message \n";
+      print "$output_message";     				#print output to screen
+      print_to_outputfile;         				#call subroutine to confirm the output is in the $outputfile used for subsequent script runs
+      exit $WARN;
+   }								#end of if block
+   #
+   # Check physical disks
+   #
+   if ( $device{physical_disks}{not_ok} > 0 ) {
+      $output_message = "$CHECK_NAME WARN - found $device{physical_disks}{not_ok} failed physical disks.  $output_message \n";
+      print "$output_message";     				#print output to screen
+      print_to_outputfile;         				#call subroutine to confirm the output is in the $outputfile used for subsequent script runs
+      exit $WARN;
+   }								#end of if block
+   #
+   # Check logical disks
+   #
+   if ( $device{logical_disks}{not_ok} > 0 ) {
+      $output_message = "$CHECK_NAME WARN - found $device{logical_disks}{not_ok} failed logical disks.  $output_message \n";
+      print "$output_message";     				#print output to screen
+      print_to_outputfile;         				#call subroutine to confirm the output is in the $outputfile used for subsequent script runs
+      exit $WARN;
+   }								#end of if block
+   #
+   # Check processors
+   #
+   if ( $device{processor_status_count}{not_ok} > 0 ) {
+      $output_message = "$CHECK_NAME WARN - found $device{processor_status_count}{not_ok} failed processors.  $output_message \n";
+      print "$output_message";     				#print output to screen
+      print_to_outputfile;         				#call subroutine to confirm the output is in the $outputfile used for subsequent script runs
+      exit $WARN;
+   }								#end of if block
+   #
+   # Check memory modules
+   #
+   if ( $device{memory_module_status_count}{not_ok} > 0 ) {
+      $output_message = "$CHECK_NAME WARN - found $device{memory_module_status_count}{not_ok} failed memory modules.  $output_message \n";
+      print "$output_message";     				#print output to screen
+      print_to_outputfile;         				#call subroutine to confirm the output is in the $outputfile used for subsequent script runs
+      exit $WARN;
+   }								#end of if block
+   #
+   #
+   #
+   # We should only get this far if there were no problems detected
+   #
+   $output_message = "$CHECK_NAME OK - $output_message \n";	
+   print "$output_message";     				#print output to screen
+   print_to_outputfile;         				#call subroutine to confirm the output is in the $outputfile used for subsequent script runs
+   exit $OK;
+}                                            			#end of subroutine
+
+
+
+
+
+
+
+
+# --------------- main body of program ------------------------------------
+get_options;
+sanity_checks;
+check_name_resolution;
+ping_remote_host;
+check_for_output_file;
+verify_snmp;
+get_temperature;
+get_power_redundancy;
+get_fan_status;
+get_physical_disk_status;
+get_logical_disk_status;
+get_processor_status;
+get_memory_module_status;
+print_output;
+
