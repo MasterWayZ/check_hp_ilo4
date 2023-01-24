@@ -855,7 +855,7 @@ sub print_output {
    #
 
    # build an output message that contains all the information
-   $output_message = "Ambient_Temperature:$device{ChassisInletTemperatureC}C Power_Redundancy:$device{cpqHeFltTolPwrSupplyCondition} Fan_Status:$device{fans}{count}/$device{fans}{ok}ok Physical_Disks:$device{physical_disks}{count}/$device{physical_disks}{ok}ok Logical_disks:$device{logical_disks}{count}/$device{logical_disks}{ok}ok RAID_Controller_count:$device{raid_controller}{count} RAID_Controller_ok:$device{raid_controller}{ok} RAID_Controller_not_ok:$device{raid_controller}{not_ok} Processors:$device{processor_status}{count}/$device{processor_status}{ok}ok Memory_Modules:$device{memory_module_status}{count}/$device{memory_module_status}{ok}ok | $perf_data";
+   $output_message = "Ambient_Temperature:$device{ChassisInletTemperatureC}C Power_Redundancy:$device{cpqHeFltTolPwrSupplyCondition} Fan_Status:$device{fans}{ok}/$device{fans}{count}ok Physical_Disks:$device{physical_disks}{ok}/$device{physical_disks}{count}ok Logical_disks:$device{logical_disks}{ok}/$device{logical_disks}{count}ok RAID_Controller_count:$device{raid_controller}{count} RAID_Controller_ok:$device{raid_controller}{ok} RAID_Controller_not_ok:$device{raid_controller}{not_ok} Processors:$device{processor_status}{ok}/$device{processor_status}{count}ok Memory_Modules:$device{memory_module_status}{ok}/$device{memory_module_status}{count}ok | $perf_data";
    #
    # alert if the ambient temperature is too high
    #
